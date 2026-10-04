@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import * as api from "../api/client";
 import { ApiError } from "../api/client";
-import type { Channel, Member, Message } from "../api/types";
+import type { AggregatedStatus, Channel, Member, Message } from "../api/types";
 import AudioUnlockOverlay from "../components/AudioUnlockOverlay";
 import HoldToRecordButton from "../components/HoldToRecordButton";
 import MessageList from "../components/MessageList";
 import OnlineMembers from "../components/OnlineMembers";
 import { usePlaybackQueue } from "../playback/usePlaybackQueue";
+import { applyServerEvent } from "../realtime/events";
+import type { ServerEvent } from "../realtime/events";
+import { useWebSocket } from "../realtime/useWebSocket";
 
 export interface ChannelPageProps {
   /** The full row, so the header has a name without a second request. */
@@ -26,6 +29,12 @@ export default function ChannelPage({ channel, currentUserId, onBack }: ChannelP
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMore, setHasMore] = useState(false);
+  const [lastSentId, setLastSentId] = useState<string | null>(null);
+
+  const maxSequence = useMemo(
+    () => messages.reduce((highest, message) => Math.max(highest, message.sequence), 0),
+    [messages],
+  );
 
   const { enqueue, pause, resume, clear, unlock, unlocked, playingId, pendingCount } = usePlaybackQueue(
     currentUserId,
@@ -34,6 +43,35 @@ export default function ChannelPage({ channel, currentUserId, onBack }: ChannelP
       void api.markPlayed(item.id).catch(() => {});
     },
   );
+
+  const handleServerEvent = useCallback(
+    (event: ServerEvent) => {
+      setMessages((current) =>
+        applyServerEvent(current, event, (senderId) => members.find((member) => member.id === senderId)?.username),
+      );
+      if (
+        (event.type === "message.new" || event.type === "message.replay") &&
+        event.data.sender_id !== currentUserId
+      ) {
+        // Having it is what "delivered" means for this user. Best effort: the
+        // message is already on screen either way.
+        void api.markDelivered(event.data.id).catch(() => {});
+      }
+    },
+    [members, currentUserId],
+  );
+
+  const { status: connectionStatus } = useWebSocket({
+    channelId,
+    sinceSequence: maxSequence,
+    // Held until history is loaded, so the first connect replays nothing and
+    // the transcript does not double-render everything.
+    enabled: !loading,
+    onEvent: handleServerEvent,
+  });
+
+  const lastSentStatus: AggregatedStatus | null =
+    lastSentId === null ? null : (messages.find((message) => message.id === lastSentId)?.aggregated_status ?? null);
 
   // Ids held when the channel opened are history, not new arrivals, so they are
   // never replayed. Anything added afterwards is enqueued.
@@ -130,6 +168,12 @@ export default function ChannelPage({ channel, currentUserId, onBack }: ChannelP
         </p>
       )}
 
+      {connectionStatus === "reconnecting" && (
+        <p className="banner" role="status">
+          Connection lost. Reconnecting...
+        </p>
+      )}
+
       <div className="channel">
         <div className="channel__main">
           {playingId !== null && <p className="muted">Playing a message...</p>}
@@ -147,14 +191,16 @@ export default function ChannelPage({ channel, currentUserId, onBack }: ChannelP
           )}
           <HoldToRecordButton
             channelId={channelId}
+            deliveryStatus={lastSentStatus}
             onRecordingChange={(active) => (active ? pause() : resume())}
-            onSent={(message) =>
+            onSent={(message) => {
+              setLastSentId(message.id);
               // The upload returns the pending row, so the transcript shows it
               // without waiting for the worker. It goes to the front because the
               // list is held newest-first, and it replaces the later copy the
               // worker event brings, matched on id.
-              setMessages((current) => [message, ...current.filter((existing) => existing.id !== message.id)])
-            }
+              setMessages((current) => [message, ...current.filter((existing) => existing.id !== message.id)]);
+            }}
           />
         </div>
         <OnlineMembers members={members} />

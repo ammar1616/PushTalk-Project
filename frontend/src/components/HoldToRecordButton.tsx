@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import * as api from "../api/client";
 import { ApiError } from "../api/client";
-import type { Message } from "../api/types";
+import type { AggregatedStatus, Message } from "../api/types";
 import { MAX_RECORDING_MS, useRecorder } from "../recorder/useRecorder";
 
 export interface HoldToRecordButtonProps {
@@ -11,11 +11,21 @@ export interface HoldToRecordButtonProps {
   onSent(message: Message): void;
   /** Tells the page to hold playback while the microphone is open. */
   onRecordingChange?(recording: boolean): void;
+  /**
+   * Delivery of the most recently sent message, driven by socket status
+   * events. Shown in place of the local "sent" once known.
+   */
+  deliveryStatus?: AggregatedStatus | null;
 }
 
 type SendState = "idle" | "sending" | "sent" | "error";
 
-export default function HoldToRecordButton({ channelId, onSent, onRecordingChange }: HoldToRecordButtonProps) {
+export default function HoldToRecordButton({
+  channelId,
+  onSent,
+  onRecordingChange,
+  deliveryStatus,
+}: HoldToRecordButtonProps) {
   const { recording, elapsedMs, supported, start, stop, cancel } = useRecorder();
   const [toast, setToast] = useState<string | null>(null);
   const [sendState, setSendState] = useState<SendState>("idle");
@@ -90,6 +100,15 @@ export default function HoldToRecordButton({ channelId, onSent, onRecordingChang
     return <p className="muted">This browser cannot record audio.</p>;
   }
 
+  // Once the server reports delivery, that is the honest label; the local
+  // "sent" only covers the gap before the first status event arrives.
+  const stateLabel =
+    sendState === "sending"
+      ? "sending"
+      : sendState === "error"
+        ? "error"
+        : (deliveryStatus ?? (sendState === "sent" ? "sent" : null));
+
   return (
     <div className="recorder">
       <button
@@ -125,8 +144,8 @@ export default function HoldToRecordButton({ channelId, onSent, onRecordingChang
       </button>
 
       {recording && <span className="recorder__timer">{(elapsedMs / 1000).toFixed(1)}s</span>}
-      {sendState !== "idle" && sendState !== "sending" && (
-        <span className={`recorder__state recorder__state--${sendState}`}>{sendState}</span>
+      {stateLabel !== null && (
+        <span className={`recorder__state recorder__state--${stateLabel}`}>{stateLabel}</span>
       )}
       {toast !== null && (
         <span className="recorder__toast" role="status">

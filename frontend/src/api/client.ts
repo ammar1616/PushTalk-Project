@@ -47,6 +47,25 @@ export function clearToken(): void {
 }
 
 /**
+ * The realtime endpoint for one channel.
+ *
+ * The token travels as a query parameter because the browser WebSocket API
+ * cannot set an Authorization header; the backend accepts it there for the same
+ * reason. `since_sequence` is read at connect time and is what makes a reconnect
+ * recover what was missed rather than starting from now.
+ */
+export function webSocketUrl(channelId: string, sinceSequence: number): string {
+  const token = getToken() ?? "";
+  const wsBase = baseUrl().replace(/^http/, "ws");
+  const params = new URLSearchParams({
+    token,
+    channel_id: channelId,
+    since_sequence: String(sinceSequence),
+  });
+  return `${wsBase}/ws?${params.toString()}`;
+}
+
+/**
  * Where the backend lives.
  *
  * The browser resolves this, not Docker: inside the frontend container the
